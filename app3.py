@@ -3,12 +3,13 @@ import os
 from dotenv import load_dotenv
 import requests
 from groq import Groq
-from streamlit_webrtc import webrtc_streamer, WebRtcMode
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import speech_recognition as sr
 import json
 import queue
 import threading
 import av
+import numpy as np
 
 # Load environment variables
 load_dotenv()
@@ -85,21 +86,32 @@ def generate_speech(text):
         st.error(f"Error in speech generation: {str(e)}")
         return None
 
-def process_audio(frame):
-    sound = frame.to_ndarray(format="s16")
-    recognizer = sr.Recognizer()
-    audio_data = sr.AudioData(sound.tobytes(), sample_rate=48000, sample_width=2)
-    
-    try:
-        text = recognizer.recognize_google(audio_data)
-        if text:
-            st.session_state['audio_buffer'].put(text)
-    except sr.UnknownValueError:
-        pass
-    except Exception as e:
-        st.error(f"Error processing audio: {str(e)}")
-    
-    return av.AudioFrame.from_ndarray(sound, format='s16')
+class AudioProcessor:
+    def __init__(self):
+        self.recognizer = sr.Recognizer()
+
+    def recv(self, frame):
+        try:
+            # Convert audio frame to numpy array
+            sound = frame.to_ndarray(format="s16")
+            
+            # Create AudioData object
+            audio_data = sr.AudioData(sound.tobytes(), sample_rate=48000, sample_width=2)
+            
+            # Attempt speech recognition
+            try:
+                text = self.recognizer.recognize_google(audio_data)
+                if text:
+                    st.session_state['audio_buffer'].put(text)
+            except sr.UnknownValueError:
+                pass  # Ignore frames without speech
+            except Exception as e:
+                st.error(f"Speech recognition error: {str(e)}")
+            
+            return frame
+        except Exception as e:
+            st.error(f"Audio processing error: {str(e)}")
+            return frame
 
 def main():
     st.title("🎙️ Voice-Controlled Chart Assistant")
@@ -113,13 +125,19 @@ def main():
 
     with col1:
         st.write("🎤 Voice Input:")
+        # Configure WebRTC
+        rtc_configuration = RTCConfiguration(
+            {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+        )
+        
         webrtc_ctx = webrtc_streamer(
             key="speech-to-text",
             mode=WebRtcMode.SENDONLY,
-            audio_receiver_size=1024,
+            rtc_configuration=rtc_configuration,
             media_stream_constraints={"video": False, "audio": True},
-            rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-            audio_processing_frame_callback=process_audio
+            async_processing=True,
+            video_processor_factory=None,
+            audio_processor_factory=AudioProcessor,
         )
 
     # Process voice input
