@@ -1,7 +1,4 @@
 streamlit
-SpeechRecognition
-sounddevice
-plotly
 requests
 python-dotenv
 groq
