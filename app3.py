@@ -3,6 +3,12 @@ import os
 from dotenv import load_dotenv
 import requests
 from groq import Groq
+from streamlit_webrtc import webrtc_streamer, WebRtcMode
+import speech_recognition as sr
+import json
+import queue
+import threading
+import av
 
 # Load environment variables
 load_dotenv()
@@ -19,6 +25,10 @@ if not groq_api_key:
 
 # Initialize Groq client
 client = Groq(api_key=groq_api_key)
+
+# Initialize session state for audio
+if 'audio_buffer' not in st.session_state:
+    st.session_state['audio_buffer'] = queue.Queue()
 
 def get_groq_response(question):
     try:
@@ -75,41 +85,84 @@ def generate_speech(text):
         st.error(f"Error in speech generation: {str(e)}")
         return None
 
+def process_audio(frame):
+    sound = frame.to_ndarray(format="s16")
+    recognizer = sr.Recognizer()
+    audio_data = sr.AudioData(sound.tobytes(), sample_rate=48000, sample_width=2)
+    
+    try:
+        text = recognizer.recognize_google(audio_data)
+        if text:
+            st.session_state['audio_buffer'].put(text)
+    except sr.UnknownValueError:
+        pass
+    except Exception as e:
+        st.error(f"Error processing audio: {str(e)}")
+    
+    return av.AudioFrame.from_ndarray(sound, format='s16')
+
 def main():
-    st.title("🤖 AI Chat Assistant with Voice")
-    st.write("This is a text-based version of the assistant that works in the browser.")
+    st.title("🎙️ Voice-Controlled Chart Assistant")
     
     # Initialize session state for chat history
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
-    
-    # Text input for questions
-    user_input = st.text_input("💭 Type your question here:", key="user_input")
-    
-    # Process input when user submits
-    if st.button("🚀 Send") or user_input:
-        if user_input:
+
+    # Create two columns for the layout
+    col1, col2 = st.columns([1, 3])
+
+    with col1:
+        st.write("🎤 Voice Input:")
+        webrtc_ctx = webrtc_streamer(
+            key="speech-to-text",
+            mode=WebRtcMode.SENDONLY,
+            audio_receiver_size=1024,
+            media_stream_constraints={"video": False, "audio": True},
+            rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+            audio_processing_frame_callback=process_audio
+        )
+
+    # Process voice input
+    if webrtc_ctx.state.playing:
+        while not st.session_state['audio_buffer'].empty():
+            user_input = st.session_state['audio_buffer'].get()
+            st.write(f"🗣️ You said: {user_input}")
+            
             # Get AI response
             ai_response = get_groq_response(user_input)
             if ai_response:
-                # Display the response
                 st.write("🤖 Assistant:", ai_response)
                 
                 # Generate and play audio response
-                with st.spinner("🔊 Generating audio response..."):
-                    audio_content = generate_speech(ai_response)
-                    if audio_content:
-                        st.audio(audio_content, format="audio/mp3")
+                audio_content = generate_speech(ai_response)
+                if audio_content:
+                    st.audio(audio_content, format="audio/mp3")
                 
                 # Update chat history
                 st.session_state.chat_history.append({
                     "user": user_input,
                     "assistant": ai_response
                 })
-                
-                # Clear the input box
-                st.session_state.user_input = ""
-    
+
+    # Text input as fallback
+    user_input = st.text_input("💭 Or type your question here:")
+    if user_input:
+        # Get AI response
+        ai_response = get_groq_response(user_input)
+        if ai_response:
+            st.write("🤖 Assistant:", ai_response)
+            
+            # Generate and play audio response
+            audio_content = generate_speech(ai_response)
+            if audio_content:
+                st.audio(audio_content, format="audio/mp3")
+            
+            # Update chat history
+            st.session_state.chat_history.append({
+                "user": user_input,
+                "assistant": ai_response
+            })
+
     # Display chat history
     if st.session_state.chat_history:
         st.subheader("💬 Chat History")

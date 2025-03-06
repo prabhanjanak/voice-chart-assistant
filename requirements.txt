@@ -1,5 +1,9 @@
 streamlit
+streamlit-webrtc
 requests
 python-dotenv
 groq
 elevenlabs
+SpeechRecognition
+av
+numpy
